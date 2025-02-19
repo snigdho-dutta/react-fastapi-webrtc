@@ -1,0 +1,28 @@
+__pycache__/
+poetry.lock
+
+
+# Environments
+.*env/
+env/
+venv/
+
+# Environment Variable
+*.env*
+
+# Logs
+logs/
+*.logs
+
+# Temporary Files
+*.tmp
+*.temp
+.cache/
+
+
+# Build
+build/
+dist/
+
+# Others
+.vscode/*

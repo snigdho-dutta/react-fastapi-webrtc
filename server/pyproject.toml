@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "web-rtc"
+version = "0.1.0"
+description = ""
+authors = ["snigdho-dutta <aexseusidparker64@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.115.8"
+uvicorn = "^0.34.0"
+python-socketio = "^5.12.1"
+uuid = "^1.30"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
