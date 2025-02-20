@@ -91,10 +91,13 @@ const RoomPage = () => {
           ) && <b>Receiving</b>}
           <div className='self-center flex flex-wrap gap-4 items-start w-full'>
             {Object.entries(sendFiles).map(([sid, files]) => (
-              <div className='flex flex-col max-w-[280px] justify-between min-h-[280px] max-h-[280px] overflow-auto bg-sky-300 border p-1 gap-1'>
+              <div
+                key={sid}
+                className='flex flex-col max-w-[280px] justify-between min-h-[280px] max-h-[280px] overflow-auto bg-sky-300 border p-1 gap-1'
+              >
                 <b className=''>{sid}</b>
                 <div className='text-xs h-full pb-1'>
-                  {[...files, ...files].map((file) => (
+                  {files.map((file) => (
                     <div key={file.id} className='flex flex-col gap-1'>
                       <div className='flex flex-col'>
                         <p className='break-words w-full'>{file.name}</p>
@@ -125,7 +128,7 @@ const RoomPage = () => {
                 >
                   <CardContent
                     className={cn(
-                      'flex flex-col p-1 gap-1 justify-between w-[280px] h-[280px] overflow-auto'
+                      'flex flex-col p-1 gap-1 w-[280px] h-[280px] overflow-auto'
                     )}
                   >
                     <b className='text-sm'>{sid}</b>
@@ -140,7 +143,10 @@ const RoomPage = () => {
                     )}
                     <div className='flex flex-col w-full gap-2 pb-1'>
                       {receiveFiles[sid]?.map((file) => (
-                        <div className='flex flex-col w-full text-xs gap-1'>
+                        <div
+                          key={file.id}
+                          className='flex flex-col w-full text-xs gap-1'
+                        >
                           <p className='break-words'>{file.name}</p>
                           <ProgressWithValue
                             value={file.progress}
