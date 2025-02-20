@@ -1,10 +1,10 @@
 import { FileChunk, FileMetadata, FileStorage } from '@/storage/indexed-db'
-import RTCManager from './rtc-manager'
 import {
   arrayBufferToBase64,
   base64ToArrayBuffer,
   decodeBlobToObject,
 } from './blob-encode-decode'
+import RTCManager from './rtc-manager'
 
 export type ChannelData = {
   type: string
@@ -19,14 +19,11 @@ const CHUNK_SIZE = 128 * 1024 // 256KB
 const MAX_BUFFER_THRESHOLD = 64 * 1024 // 64KB
 
 export const sendFileAsBase64 = async (
-  peer: RTCManager,
+  dataChannel: RTCDataChannel,
   file: File,
   onProgress?: (progress: number) => void
 ) => {
-  if (
-    peer.peer.connectionState === 'connected' &&
-    peer.dataChannel?.readyState === 'open'
-  ) {
+  if (dataChannel?.readyState === 'open') {
     const fileId = crypto.randomUUID()
     const metadata: FileMetadata = {
       id: fileId,
@@ -40,7 +37,7 @@ export const sendFileAsBase64 = async (
       lastModified: file.lastModified,
     }
 
-    peer.dataChannel.send(JSON.stringify({ type: 'metadata', metadata }))
+    dataChannel.send(JSON.stringify({ type: 'metadata', metadata }))
 
     const chunkBytesIndexes = Array.from(
       {
@@ -54,11 +51,11 @@ export const sendFileAsBase64 = async (
       const chunkBytesIdx = chunkBytesIndexes[i]
       const chunkBlob = file.slice(chunkBytesIdx, chunkBytesIdx + CHUNK_SIZE)
       const chunk = await readChunk(reader, chunkBlob)
-      while (peer.dataChannel.bufferedAmount > MAX_BUFFER_THRESHOLD) {
+      while (dataChannel.bufferedAmount > MAX_BUFFER_THRESHOLD) {
         await new Promise((resolve) => setTimeout(resolve, 50))
       }
       const progress = ((i + 1) / chunkBytesIndexes.length) * 100
-      peer.dataChannel.send(
+      dataChannel.send(
         JSON.stringify({
           type: 'chunk',
           fileId,
@@ -69,11 +66,11 @@ export const sendFileAsBase64 = async (
       )
       onProgress?.(progress)
     }
-    while (peer.dataChannel.bufferedAmount > 0) {
+    while (dataChannel.bufferedAmount > 0) {
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
 
-    peer.dataChannel.send(JSON.stringify({ type: 'complete', fileId }))
+    dataChannel.send(JSON.stringify({ type: 'complete', fileId }))
   }
 }
 
@@ -86,12 +83,12 @@ const readChunk = (reader: FileReader, chunk: Blob) => {
 }
 
 export const receiveFileAsBase64 = async (
-  peer: RTCManager,
+  dataChannel: RTCDataChannel,
   fileStorage: FileStorage,
   cb?: (progress: number) => void
 ) => {
-  if (!peer.dataChannel) throw new Error('Data channel not found')
-  peer.dataChannel.onmessage = async (message) => {
+  if (!dataChannel) throw new Error('Data channel not found')
+  dataChannel.onmessage = async (message) => {
     const data = (
       typeof message.data === 'string'
         ? JSON.parse(message.data)
@@ -140,6 +137,9 @@ export const downloadFile = async (
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+export const deleteFile = async (fileId: string, fileStorage: FileStorage) => {
   await fileStorage.deleteFileMetadata(fileId)
   await fileStorage.deleteFileChunks(fileId)
 }
@@ -147,13 +147,11 @@ export const downloadFile = async (
 export const sendFile = async (
   peer: RTCManager,
   file: File,
-  onProgress?: (progress: number) => void
+  onProgress?: (v: FileMetadata & { progress: number }) => void
 ) => {
-  if (
-    peer.peer.connectionState === 'connected' &&
-    peer.dataChannel?.readyState === 'open'
-  ) {
-    const fileId = crypto.randomUUID()
+  const fileId = crypto.randomUUID()
+  const dataChannel = peer.createDataChannel(fileId)
+  dataChannel.onopen = async () => {
     const metadata: FileMetadata = {
       id: fileId,
       name: file.name,
@@ -166,7 +164,7 @@ export const sendFile = async (
       lastModified: file.lastModified,
     }
 
-    peer.dataChannel.send(JSON.stringify({ type: 'metadata', metadata }))
+    dataChannel.send(JSON.stringify({ type: 'metadata', metadata }))
 
     const chunkBytesIndexes = Array.from(
       {
@@ -179,64 +177,70 @@ export const sendFile = async (
     for (let i = 0; i < chunkBytesIndexes.length; i++) {
       const chunkBytesIdx = chunkBytesIndexes[i]
       const chunkBlob = file.slice(chunkBytesIdx, chunkBytesIdx + CHUNK_SIZE)
-      const progress = ((i + 1) / chunkBytesIndexes.length) * 100
+      const progress = +(((i + 1) / chunkBytesIndexes.length) * 100).toFixed(2)
       const chunkMetadata: Omit<FileChunk, 'chunk'> = {
         fileId,
         index: i,
         progress,
       }
 
-      peer.dataChannel.send(
+      dataChannel.send(
         JSON.stringify({ type: 'chunk-metadata', metadata: chunkMetadata })
       )
-      onProgress?.(progress)
+      onProgress?.({ ...metadata, progress })
       const chunk = await readChunk(reader, chunkBlob)
-      while (peer.dataChannel.bufferedAmount > MAX_BUFFER_THRESHOLD) {
+      while (dataChannel.bufferedAmount > MAX_BUFFER_THRESHOLD) {
         await new Promise((resolve) => setTimeout(resolve, 50))
       }
 
-      peer.dataChannel.send(chunk)
+      dataChannel.send(chunk)
 
       // onProgress?.(progress)
     }
-    while (peer.dataChannel.bufferedAmount > 0) {
+    while (dataChannel.bufferedAmount > 0) {
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
 
-    peer.dataChannel.send(JSON.stringify({ type: 'complete', fileId }))
+    dataChannel.send(JSON.stringify({ type: 'complete', fileId }))
+    // peer.closeDataChannel(fileId)
   }
+
+  // dataChannel.onclose = () => {
+  //   console.log(`Data channel for file ${fileId} closed`)
+  // }
 }
 
 export const receiveFile = async (
-  peer: RTCManager,
+  dataChannel: RTCDataChannel,
   fileStorage: FileStorage,
-  onProgress?: (progress: number) => void
+  onProgress?: (v: FileMetadata & { progress: number }) => void
 ) => {
-  if (!peer.dataChannel) throw new Error('Data channel not found')
+  if (!dataChannel) throw new Error('Data channel not found')
+  let fileMetadata: FileMetadata
   let chunkMetadata: Omit<FileChunk, 'chunk'>
-  peer.dataChannel.onmessage = async ({ data }) => {
-    // console.log('received', data)
+  dataChannel.onmessage = async ({ data }) => {
     if (typeof data === 'string') {
       data = JSON.parse(data) as ChannelData
       switch (data.type) {
         case 'metadata': {
+          fileMetadata = data.metadata!
           await fileStorage.saveFileMetadata(data.metadata! as FileMetadata)
           break
         }
         case 'chunk-metadata': {
           chunkMetadata = data.metadata! as FileChunk
-          onProgress?.(chunkMetadata.progress)
+          onProgress?.({ ...fileMetadata, progress: chunkMetadata.progress })
           break
         }
         case 'complete': {
           const metadata = await fileStorage.getFileMetadata(data.fileId!)
           metadata.status = 'completed'
+          dataChannel.close()
           downloadFile(metadata.id, fileStorage)
           break
         }
       }
     } else {
-      console.log('chunkmetadata', chunkMetadata)
       await fileStorage.saveFileChunk(
         chunkMetadata.fileId!,
         chunkMetadata.index!,

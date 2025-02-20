@@ -5,8 +5,8 @@ export type Peer = {
 
 export default class RTCManager {
   peer: RTCPeerConnection
-  dataChannel?: RTCDataChannel
-  constructor(channelName?: string, cb?: (e: RTCDataChannelEvent) => void) {
+  dataChannels: RTCDataChannel[]
+  constructor(channelName?: string) {
     this.peer = new RTCPeerConnection({
       iceServers: [
         {
@@ -18,17 +18,23 @@ export default class RTCManager {
         },
       ],
     })
+    this.dataChannels = []
     if (channelName) {
-      this.dataChannel = this.peer.createDataChannel(channelName)
+      this.dataChannels?.push(this.peer.createDataChannel(channelName))
     }
-    this.peer.ondatachannel = (e) => {
-      console.log('ondatachannel', e)
-      this.dataChannel = e.channel
-      // this.dataChannel.onmessage = (e) => {
-      //   console.log('dataChannel.onmessage.class', e)
-      // }
-      cb?.(e)
-    }
+    // this.peer.ondatachannel = (e) => {
+    //   const index = this.dataChannels.findIndex(
+    //     (c) => c.label === e.channel.label
+    //   )
+    //   if (index !== -1) {
+    //     const existingDataChannel = this.dataChannels.splice(index, 1).pop()
+    //     existingDataChannel?.close()
+    //   } else {
+    //     this.dataChannels.push(e.channel)
+    //   }
+
+    //   cb?.(e)
+    // }
   }
 
   async createOffer() {
@@ -56,7 +62,30 @@ export default class RTCManager {
   }
 
   createDataChannel(channelName: string) {
-    this.dataChannel = this.peer.createDataChannel(channelName)
+    const index = this.dataChannels.findIndex((c) => c.label === channelName)
+    if (index === -1 || this.dataChannels[index].readyState === 'closed') {
+      const dataChannel = this.peer.createDataChannel(channelName)
+      this.dataChannels.push(dataChannel)
+      return dataChannel
+    }
+    return this.dataChannels[index]
+  }
+
+  onDataChannel(e: RTCDataChannelEvent) {
+    const index = this.dataChannels.findIndex(
+      (c) => c.label === e.channel.label
+    )
+    if (index !== -1) {
+      const existingDataChannel = this.dataChannels.splice(index, 1).pop()
+      existingDataChannel?.close()
+    }
+    this.dataChannels.push(e.channel)
+    return e.channel
+  }
+
+  closeDataChannel(channelName: string) {
+    this.dataChannels.find((c) => c.label === channelName)?.close()
+    this.dataChannels = this.dataChannels.filter((c) => c.label !== channelName)
   }
 
   close() {

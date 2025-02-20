@@ -54,14 +54,20 @@ class SocketIOManager:
         async def disconnect(sid):
             if sid in self.connected_clients:
                 self.connected_clients.remove(sid)
-            for room, sids in self.rooms.items():
-                if sid in sids:
+            rooms = []
+            for room in list(self.rooms.keys()):
+                if sid in self.rooms[room]:
                     await self.sio.leave_room(sid, room)
                     self.rooms[room].remove(sid)
+                    if not len(self.rooms[room]):
+                        self.rooms.pop(room)
+                    else:
+                        rooms.append(room)
 
-            await self.sio.emit(
-                "room_clients", {"clients": list(self.rooms.get(room))}, room=room
-            )
+            for room in rooms:
+                await self.sio.emit(
+                    "room_clients", {"clients": list(self.rooms.get(room))}, room=room
+                )
 
         @self.sio.event
         async def join_room(sid, room):

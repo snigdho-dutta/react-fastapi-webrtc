@@ -2,11 +2,11 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import Page from '@/components/ui/page'
+import { ProgressWithValue } from '@/components/ui/progress-with-value'
 import { useIOClient } from '@/hooks/use-io-client'
-import { useIOSubscribe } from '@/hooks/use-io-subscribe'
+import useRTC from '@/hooks/use-rtc'
 import { useSocketIO } from '@/hooks/use-socket'
-import { downloadFile, receiveFile, sendFile } from '@/lib/file-transfer'
-import RTCManager, { Peer } from '@/lib/rtc-manager'
+import { sendFile } from '@/lib/file-transfer'
 import { cn } from '@/lib/utils'
 import { FileStorage } from '@/storage/indexed-db'
 import { useEffect, useRef, useState } from 'react'
@@ -15,10 +15,7 @@ import { useParams } from 'react-router'
 const RoomPage = () => {
   const { roomId } = useParams()
   const { ioEventsManager } = useSocketIO()
-  const { roomClients, setRoomClients, id } = useIOClient()
-  useIOSubscribe<{ clients: string[] }>('room_clients', ({ clients }) => {
-    setRoomClients(clients)
-  })
+  const { id } = useIOClient()
   const fileStorageRef = useRef<FileStorage>(null)
   useEffect(() => {
     fileStorageRef.current = new FileStorage()
@@ -26,143 +23,32 @@ const RoomPage = () => {
     return () => ioEventsManager.publish('leave_room', roomId)
   }, [ioEventsManager, roomId, id])
 
-  const [peers, setPeers] = useState<Peer[]>([])
-  const [connectionState, setConnectionState] = useState<{
-    [sid: string]: string
-  }>({})
-
-  // const [_, forceRender] = useState(false)
-
-  useEffect(() => {
-    if (!id || !roomId) return
-    setPeers((p) => {
-      const oldPeers = p.filter((p) => roomClients.includes(p.sid))
-      return [
-        ...oldPeers,
-        ...roomClients
-          .filter((sid) => id !== sid && !oldPeers.find((p) => p.sid === sid))
-          .map((sid) => ({
-            sid,
-            peer: new RTCManager(undefined, () =>
-              setConnectionState((p) => ({ ...p, [sid]: 'connected' }))
-            ),
-          })),
-      ]
-    })
-  }, [id, roomId, roomClients])
-
-  const createOffer = async (sid: string) => {
-    const peer = peers.find((p) => p.sid === sid)
-    if (!peer) {
-      return
-    }
-    peer.peer.createDataChannel('file-transfer')
-    const offer = await peer.peer.createOffer()
-    ioEventsManager.publish('offer', { offer, room: roomId, to: sid, from: id })
-  }
-
-  useIOSubscribe<{
-    offer: RTCSessionDescriptionInit
-    to: string
-    from: string
-  }>('offer', async ({ offer, to, from }) => {
-    console.log('offer', { from, to })
-    const peer = peers.find((p) => p.sid === from)
-    if (!peer) {
-      throw Error("Peer doesn't exist")
-    }
-    await peer.peer.acceptOffer(offer)
-    const answer = await peer.peer.createAnswer()
-    ioEventsManager.publish('answer', {
-      answer,
-      room: roomId,
-      to: from,
-      from: to,
-    })
-  })
-  useIOSubscribe<{
-    answer: RTCSessionDescriptionInit
-    to: string
-    from: string
-  }>('answer', async ({ answer, to, from }) => {
-    console.log('answer', { from, to })
-    const peer = peers.find((p) => p.sid === from)
-    if (!peer) {
-      throw Error("Peer doesn't exist")
-    }
-    await peer.peer.acceptAnswer(answer)
-  })
-
-  useIOSubscribe<{ candidate: RTCIceCandidateInit; to: string; from: string }>(
-    'ice_candidate',
-    async ({ candidate, to, from }) => {
-      console.log('ice_candidate', { candidate, to, from })
-      const peer = peers.find((p) => p.sid === from)
-      if (!peer) {
-        throw Error("Peer doesn't exist")
-      }
-      await peer.peer.addIceCandidate(candidate)
-    }
-  )
-
-  useEffect(() => {
-    peers.forEach(({ peer, sid }) => {
-      peer.peer.onicecandidate = ({ candidate }) => {
-        console.log('onicecandidate', candidate)
-        ioEventsManager.publish('ice_candidate', {
-          candidate,
-          room: roomId,
-          to: sid,
-          from: id,
-        })
-      }
-      peer.peer.onconnectionstatechange = ({ currentTarget }) => {
-        setConnectionState((p) => ({
-          ...p,
-          [sid]: (currentTarget as RTCPeerConnection).connectionState,
-        }))
-      }
-    })
-    return () => {
-      peers.forEach(({ peer }) => {
-        peer.peer.onicecandidate = null
-        peer.peer.onconnectionstatechange = null
-        // peer.close()
-      })
-    }
-  }, [id, ioEventsManager, peers, roomId])
-
-  const [file, setFile] = useState<File>()
-  const [sendFileProgress, setSendFileProgress] = useState(0)
-
-  const [receiveProgress, setReceiveProgress] = useState<
-    { sid: string; progress: number }[]
-  >([])
+  const [files, setFiles] = useState<File[]>([])
 
   const sendFileToConnectedPeers = () => {
-    if (!file) return
-    peers.forEach(({ peer }) => {
-      sendFile(peer, file, setSendFileProgress)
-    })
-  }
-
-  useEffect(() => {
+    if (!files.length) return
     peers.forEach(({ peer, sid }) => {
-      if (peer.dataChannel) {
-        receiveFile(peer, fileStorageRef.current!, (v) => {
-          setReceiveProgress((p) => {
-            let existing = p.find((p) => p.sid === sid)
-            if (existing) {
-              existing.progress = v
-            } else {
-              existing = { sid, progress: v }
-            }
-            return [...p.filter((p) => p.sid !== sid), existing]
-          })
+      for (const file of files) {
+        sendFile(peer, file, (fs) => {
+          setSendFiles((p) => ({
+            ...p,
+            [sid]: (p[sid] || [])
+              .filter((f) => f.name !== file.name)
+              .concat(fs),
+          }))
         })
       }
     })
-  }, [connectionState, peers])
+  }
+
+  const {
+    peers,
+    connectionState,
+    createOffer,
+    sendFiles,
+    setSendFiles,
+    receiveFiles,
+  } = useRTC(roomId!, fileStorageRef.current!)
 
   return (
     <Page className='bg-blue-500'>
@@ -177,14 +63,17 @@ const RoomPage = () => {
               <span>You - </span>
               <span>{id}</span>
             </div>
-            <Button>Offer All</Button>
+            {/* <Button>Offer All</Button> */}
           </div>
           <div className='flex flex-col gap-2 justify-between items-center'>
             <Input
               type='file'
+              multiple
               className='bg-accent text-xs'
               onChange={(e) => {
-                setFile(e.target.files?.[0])
+                if (e.target.files) {
+                  setFiles(Array.from(e.target.files))
+                }
               }}
             />
             <Button
@@ -194,50 +83,76 @@ const RoomPage = () => {
             >
               Send
             </Button>
-            <p>{sendFileProgress}%</p>
           </div>
         </CardHeader>
-        <CardContent className='flex gap-2'>
-          {peers
-            .filter(({ sid }) => sid !== id)
-            .map(({ sid }) => (
-              <Card
-                key={sid}
-                className={cn(
-                  'hover:shadow hover:scale-105 transition rounded-sm'
-                )}
-              >
-                <CardContent
+        <CardContent className='flex flex-col text-sm gap-2'>
+          {Object.entries(sendFiles).some(
+            ([_sid, files]) => files.length > 0
+          ) && <b>Receiving</b>}
+          <div className='self-center flex flex-wrap gap-4 items-start w-full'>
+            {Object.entries(sendFiles).map(([sid, files]) => (
+              <div className='flex flex-col max-w-[280px] justify-between min-h-[280px] max-h-[280px] overflow-auto bg-sky-300 border p-1 gap-1'>
+                <b className=''>{sid}</b>
+                <div className='text-xs h-full pb-1'>
+                  {[...files, ...files].map((file) => (
+                    <div key={file.id} className='flex flex-col gap-1'>
+                      <div className='flex flex-col'>
+                        <p className='break-words w-full'>{file.name}</p>
+                        {/* <p>{file.type}</p> */}
+                      </div>
+                      <ProgressWithValue
+                        value={file.progress}
+                        className='h-3'
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className={cn('flex gap-4')}>
+            {peers
+              .filter(({ sid }) => sid !== id)
+              .map(({ sid }) => (
+                <Card
+                  key={sid}
                   className={cn(
-                    'm-0 p-4 gap-4 justify-baseline grid place-items-center',
+                    'hover:shadow hover:scale-105 transition rounded-sm',
                     connectionState[sid] === 'connected'
-                      ? 'bg-green-500'
-                      : 'bg-red-500'
+                      ? 'bg-green-300'
+                      : 'bg-red-300'
                   )}
                 >
-                  <div className='text-sm'>{sid}</div>
-                  {connectionState[sid] !== 'connected' && (
-                    <Button
-                      size={'sm'}
-                      className='h-6 hover:scale-105 grid place-items-center'
-                      onClick={createOffer.bind(this, sid)}
-                    >
-                      Offer
-                    </Button>
-                  )}
-                  <p>{receiveProgress.find((p) => p.sid === sid)?.progress}</p>
-                  <Button
-                    onClick={downloadFile.bind(
-                      this,
-                      's',
-                      fileStorageRef.current!
+                  <CardContent
+                    className={cn(
+                      'flex flex-col p-1 gap-1 justify-between w-[280px] h-[280px] overflow-auto'
                     )}
                   >
-                    Download
-                  </Button>
-                </CardContent>
-              </Card>
-            ))}
+                    <b className='text-sm'>{sid}</b>
+                    {connectionState[sid] !== 'connected' && (
+                      <Button
+                        size={'sm'}
+                        className='h-6 hover:scale-105'
+                        onClick={createOffer.bind(this, sid)}
+                      >
+                        Connect
+                      </Button>
+                    )}
+                    <div className='flex flex-col w-full gap-2 pb-1'>
+                      {receiveFiles[sid]?.map((file) => (
+                        <div className='flex flex-col w-full text-xs gap-1'>
+                          <p className='break-words'>{file.name}</p>
+                          <ProgressWithValue
+                            value={file.progress}
+                            className='h-3'
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+          </div>
         </CardContent>
       </Card>
     </Page>
