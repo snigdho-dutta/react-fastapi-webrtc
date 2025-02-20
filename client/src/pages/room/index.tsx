@@ -86,14 +86,14 @@ const RoomPage = () => {
           </div>
         </CardHeader>
         <CardContent className='flex flex-col text-sm gap-2'>
-          {Object.entries(sendFiles).some(
-            ([_sid, files]) => files.length > 0
-          ) && <b>Receiving</b>}
+          {Object.keys(sendFiles).some((k) => sendFiles[k]?.length > 0) && (
+            <b>Receiving</b>
+          )}
           <div className='self-center flex flex-wrap gap-4 items-start w-full'>
             {Object.entries(sendFiles).map(([sid, files]) => (
               <div
                 key={sid}
-                className='flex flex-col max-w-[280px] justify-between min-h-[280px] max-h-[280px] overflow-auto bg-sky-300 border p-1 gap-1'
+                className='flex flex-col max-w-[280px] min-h-[280px] max-h-[280px] overflow-auto bg-sky-300 border p-1 gap-1'
               >
                 <b className=''>{sid}</b>
                 <div className='text-xs h-full pb-1'>
