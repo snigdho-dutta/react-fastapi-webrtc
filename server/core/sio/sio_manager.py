@@ -6,6 +6,10 @@ from typing import Dict, List, Set
 import uuid
 from fastapi.routing import APIRouter
 
+MAX_ROOMS = 1024
+MAX_CLIENTS_PER_ROOM = 8
+MAX_ROOMS_PER_CLIENT = 8
+
 
 class SocketIOManager:
     def __init__(self, app: FastAPI, events: List[BaseEvents]) -> ASGIApp:
@@ -78,16 +82,28 @@ class SocketIOManager:
                 self.sio.emit("join_room_error", {"message": "Invalid room id"}, to=sid)
                 return
             if room not in self.rooms:
-                self.rooms[room] = set()
+                if len(self.rooms.keys()) <= MAX_ROOMS:
+                    self.rooms[room] = set()
+                else:
+                    self.sio.emit(
+                        "join_room_error", {"message": "Rooms limit exceeded"}, to=sid
+                    )
+                    return
             if sid not in self.rooms[room]:
-                await self.sio.enter_room(sid, room)
-                self.rooms[room].add(sid)
-            await self.sio.emit(
-                "room_joined",
-                {"sid": sid, "rid": room},
-                room=room,
-                # skip_sid=sid,
-            )
+                if len(self.rooms[room]) <= MAX_CLIENTS_PER_ROOM:
+                    await self.sio.enter_room(sid, room)
+                    self.rooms[room].add(sid)
+                    await self.sio.emit(
+                        "room_joined",
+                        {"sid": sid, "rid": room},
+                        to=sid,
+                        # skip_sid=sid,
+                    )
+                else:
+                    await self.sio.emit(
+                        "join_room_error", {"message": "Clients limit exceeded"}, to=sid
+                    )
+                    return
             await self.sio.emit(
                 "room_clients", {"clients": list(self.rooms.get(room))}, room=room
             )
