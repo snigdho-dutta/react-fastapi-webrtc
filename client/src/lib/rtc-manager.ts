@@ -1,12 +1,9 @@
-export type Peer = {
-  sid: string
-  peer: RTCManager
-}
-
 export default class RTCManager {
+  sid: string
   peer: RTCPeerConnection
   dataChannels: RTCDataChannel[]
-  constructor(channelName?: string) {
+  constructor(sid: string, channelName?: string) {
+    this.sid = sid
     this.peer = new RTCPeerConnection({
       iceServers: [
         {
@@ -90,5 +87,6 @@ export default class RTCManager {
 
   close() {
     this.peer.close()
+    this.dataChannels = []
   }
 }

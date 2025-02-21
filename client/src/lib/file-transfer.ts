@@ -27,6 +27,7 @@ export const sendFileAsBase64 = async (
     const fileId = crypto.randomUUID()
     const metadata: FileMetadata = {
       id: fileId,
+      sid: '',
       name: file.name,
       size: file.size,
       type: file.type,
@@ -34,6 +35,7 @@ export const sendFileAsBase64 = async (
       totalChunks: Math.ceil(file.size / CHUNK_SIZE),
       receivedChunks: 0,
       status: 'pending',
+      transferType: 'sending',
       lastModified: file.lastModified,
     }
 
@@ -88,15 +90,18 @@ export const receiveFileAsBase64 = async (
   cb?: (progress: number) => void
 ) => {
   if (!dataChannel) throw new Error('Data channel not found')
-  dataChannel.onmessage = async (message) => {
-    const data = (
-      typeof message.data === 'string'
-        ? JSON.parse(message.data)
-        : await decodeBlobToObject(message.data)
+  dataChannel.onmessage = async ({ data }) => {
+    data = (
+      typeof data === 'string'
+        ? JSON.parse(data)
+        : await decodeBlobToObject(data)
     ) as ChannelData
     switch (data.type) {
       case 'metadata': {
-        await fileStorage.saveFileMetadata(data.metadata! as FileMetadata)
+        const metadata = (await data.metadata) as FileMetadata
+        metadata.status = 'transferring'
+        metadata.transferType = 'receiving'
+        await fileStorage.saveFileMetadata(metadata)
         break
       }
       case 'chunk': {
@@ -119,34 +124,10 @@ export const receiveFileAsBase64 = async (
   }
 }
 
-export const downloadFile = async (
-  fileId: string,
-  fileStorage: FileStorage
-) => {
-  const blob = await fileStorage.getCompletedFile(fileId)
-  if (!blob) throw new Error('File not found or incomplete')
-
-  const metadata = await fileStorage.getFileMetadata(fileId)
-  if (!metadata) throw new Error('File metadata not found')
-
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = metadata.name
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-export const deleteFile = async (fileId: string, fileStorage: FileStorage) => {
-  await fileStorage.deleteFileMetadata(fileId)
-  await fileStorage.deleteFileChunks(fileId)
-}
-
 export const sendFile = async (
   peer: RTCManager,
   file: File,
+  fileStorage: FileStorage,
   onProgress?: (v: FileMetadata & { progress: number }) => void
 ) => {
   const fileId = crypto.randomUUID()
@@ -154,6 +135,7 @@ export const sendFile = async (
   dataChannel.onopen = async () => {
     const metadata: FileMetadata = {
       id: fileId,
+      sid: peer.sid,
       name: file.name,
       size: file.size,
       type: file.type,
@@ -161,9 +143,10 @@ export const sendFile = async (
       totalChunks: Math.ceil(file.size / CHUNK_SIZE),
       receivedChunks: 0,
       status: 'pending',
+      transferType: 'sending',
       lastModified: file.lastModified,
     }
-
+    await fileStorage.saveFileMetadata(metadata)
     dataChannel.send(JSON.stringify({ type: 'metadata', metadata }))
 
     const chunkBytesIndexes = Array.from(
@@ -194,23 +177,20 @@ export const sendFile = async (
       }
 
       dataChannel.send(chunk)
-
-      // onProgress?.(progress)
     }
     while (dataChannel.bufferedAmount > 0) {
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
 
-    dataChannel.send(JSON.stringify({ type: 'complete', fileId }))
-    // peer.closeDataChannel(fileId)
+    metadata.status = 'completed'
+    await fileStorage.saveFileMetadata(metadata)
+    dataChannel.send(JSON.stringify({ type: 'complete', metadata }))
+    onProgress?.({ ...metadata, progress: 100 })
   }
-
-  // dataChannel.onclose = () => {
-  //   console.log(`Data channel for file ${fileId} closed`)
-  // }
 }
 
 export const receiveFile = async (
+  sid: string,
   dataChannel: RTCDataChannel,
   fileStorage: FileStorage,
   onProgress?: (v: FileMetadata & { progress: number }) => void
@@ -223,8 +203,11 @@ export const receiveFile = async (
       data = JSON.parse(data) as ChannelData
       switch (data.type) {
         case 'metadata': {
-          fileMetadata = data.metadata!
-          await fileStorage.saveFileMetadata(data.metadata! as FileMetadata)
+          fileMetadata = data.metadata! as FileMetadata
+          fileMetadata.status = 'transferring'
+          fileMetadata.sid = sid
+          fileMetadata.transferType = 'receiving'
+          await fileStorage.saveFileMetadata(data.metadata!)
           break
         }
         case 'chunk-metadata': {
@@ -233,10 +216,14 @@ export const receiveFile = async (
           break
         }
         case 'complete': {
-          const metadata = await fileStorage.getFileMetadata(data.fileId!)
-          metadata.status = 'completed'
+          const metadata = data.metadata! as FileMetadata
+          metadata.sid = sid
+          metadata.transferType = 'receiving'
+          await fileStorage.saveFileMetadata(metadata)
+          onProgress?.({ ...metadata, progress: 100 })
           dataChannel.close()
-          downloadFile(metadata.id, fileStorage)
+          // await downloadFile(metadata.id, fileStorage)
+          // await deleteFile(data.fileId, fileStorage)
           break
         }
       }
@@ -247,5 +234,51 @@ export const receiveFile = async (
         data
       )
     }
+  }
+}
+
+export const downloadFile = async (
+  fileId: string,
+  fileStorage: FileStorage
+) => {
+  const blob = await fileStorage.getCompletedFile(fileId)
+  if (!blob) throw new Error('File not found or incomplete')
+
+  const metadata = await fileStorage.getFileMetadata(fileId)
+  if (!metadata) throw new Error('File metadata not found')
+
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = metadata.name
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+export const deleteFile = async (fileId: string, fileStorage: FileStorage) => {
+  await fileStorage.deleteFileMetadata(fileId)
+  await fileStorage.deleteFileChunks(fileId)
+}
+
+export const getStoredFiles = async (fileStorage: FileStorage) => {
+  const files = await fileStorage.getAllFileMetadata()
+  for (const file of files) {
+    if (file.status === 'completed') {
+      const chunksCount = await fileStorage.getChunksCount(file.id)
+      if (chunksCount > 0 && file.totalChunks !== chunksCount) {
+        file.status = 'error'
+        await fileStorage.saveFileMetadata(file)
+      }
+    }
+  }
+  return files
+}
+
+export const deleteAllStoredFiles = async (fileStorage: FileStorage) => {
+  const files = await fileStorage.getAllFileMetadata()
+  for (const file of files) {
+    await deleteFile(file.id, fileStorage)
   }
 }

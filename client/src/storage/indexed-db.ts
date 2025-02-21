@@ -4,6 +4,7 @@ const CHUNK_STORE = 'chunks'
 
 export type FileMetadata = {
   id: string
+  sid: string
   name: string
   size: number
   type: string
@@ -12,6 +13,7 @@ export type FileMetadata = {
   chunkSize: number
   receivedChunks: number
   status: 'pending' | 'transferring' | 'completed' | 'error'
+  transferType: 'sending' | 'receiving'
 }
 
 export type FileChunk = {
@@ -130,5 +132,37 @@ export class FileStorage {
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
+  }
+
+  async getAllFileMetadata() {
+    if (!this.db) await this.init()
+    return new Promise<FileMetadata[]>((resolve, reject) => {
+      const transaction = this.db!.transaction(FILE_STORE, 'readonly')
+      const store = transaction.objectStore(FILE_STORE)
+      const request = store.getAll()
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+  }
+
+  async getChunksCount(fileId: string) {
+    if (!this.db) await this.init()
+    return new Promise<number>((resolve, reject) => {
+      const transaction = this.db!.transaction(CHUNK_STORE, 'readonly')
+      const store = transaction.objectStore(CHUNK_STORE)
+      const request = store.count(
+        IDBKeyRange.bound([fileId, 0], [fileId, Infinity])
+      )
+
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+  }
+
+  async close() {
+    if (this.db) {
+      this.db.close()
+      this.db = null
+    }
   }
 }
