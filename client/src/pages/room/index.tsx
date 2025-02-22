@@ -10,7 +10,6 @@ import { useSocketIO } from '@/hooks/use-socket'
 import {
   deleteAllStoredFiles,
   deleteFile,
-  downloadFile,
   getStoredFiles,
 } from '@/lib/file-transfer'
 import { cn, formatBytes } from '@/lib/utils'
@@ -18,8 +17,10 @@ import { FileMetadata, FileStorage } from '@/storage/indexed-db'
 import {
   ArrowLeftToLine,
   Download,
+  Loader,
   MoveDownLeft,
   MoveUpRight,
+  Redo,
   X,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
@@ -53,17 +54,15 @@ const RoomPage = () => {
       setStoredFiles(files)
     })
   }
-  const [_error, setError] = useState<string>('')
+  const [error, setError] = useState<string>('')
 
   useIOSubscribe<{ message: string }>(
     'join_room_error',
     ({ message = 'Join Room Error' }) => {
-      if (message !== _error) {
+      if (message !== error) {
         setError(message)
         toast(message, {
-          description: '',
           closeButton: true,
-          richColors: true,
           style: { background: '#ff0000a4' },
           onDismiss: () => {
             setError('')
@@ -84,16 +83,64 @@ const RoomPage = () => {
     onUpdateStoredFiles: updateStoredFiles,
   })
 
+  const [isDownloading, setIsDownloading] = useState<{
+    [fileId: string]: boolean
+  }>({})
+
+  const downloadFile = (fileId: string) => {
+    return new Promise<void>((resolve, reject) => {
+      const worker = new Worker(
+        new URL('../../workers/file-downloader.ts', import.meta.url),
+        { type: 'module' }
+      )
+      setIsDownloading((p) => ({ ...p, [fileId]: true }))
+
+      worker.postMessage({ fileId })
+
+      worker.onmessage = (ev) => {
+        const { blob, metadata } = ev.data as {
+          blob: Blob
+          metadata: FileMetadata
+        }
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = metadata.name
+        document.body.appendChild(a)
+        a.click()
+        requestAnimationFrame(() => {
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+        })
+        worker.terminate()
+        setIsDownloading((p) => ({ ...p, [fileId]: false }))
+        resolve()
+      }
+      worker.onerror = (ev) => {
+        worker.terminate()
+        reject(ev)
+      }
+    })
+  }
+
+  const downloadAllFiles = () => {
+    const downloadFilePromises = storedFiles.map((file) => {
+      return downloadFile(file.id)
+    })
+
+    Promise.all(downloadFilePromises).then(() => {})
+  }
+
   return (
     <Page className='bg-blue-500'>
-      <Card className='flex flex-col gap-4 items-center w-[98vw] justify-center'>
+      <Card className='flex flex-col gap-4 items-center w-[98vw] h-[98vh] justify-between overflow-auto'>
         <CardHeader className='xl:text-2xl font-semibold'>
           <div className='flex gap-2'>
             <span>Room - </span>
             <span>{roomId}</span>
           </div>
           <div className='flex gap-2 w-full justify-between'>
-            <div className='bg-green-500 text-slate-500 px-2 rounded'>
+            <div className='bg-green-500 text-white px-2 rounded'>
               <span>You - </span>
               <span>{id}</span>
             </div>
@@ -123,9 +170,9 @@ const RoomPage = () => {
             </Button>
           </div>
         </CardHeader>
-        <CardContent className='flex flex-col justify-between w-full text-sm gap-2'>
-          <div className='flex gap-4 items-center px-4 mb-2'>
-            <div className='flex flex-col sm:flex-row gap-2 items-center'>
+        <CardContent className='flex flex-col justify-between w-full h-full text-sm gap-2'>
+          <div className='flex flex-col sm:flex-row gap-4 items-center px-4 mb-2'>
+            <div className='flex flex-col w-11/12 sm:flex-row gap-2 items-center'>
               <h1 className='text-lg'>History</h1>
               <b className=''>No of File Transfers : {storedFiles.length}</b>
               <b className=''>
@@ -133,71 +180,80 @@ const RoomPage = () => {
                 {formatBytes(storedFiles.reduce((v, f) => v + f.size, 0))}
               </b>
             </div>
-            <Button
-              size={'sm'}
-              className='h-6 bg-green-500'
-              onClick={async () => {
-                storedFiles.forEach((file) => {
-                  downloadFile(file.id, fileStorageRef.current!)
-                })
-              }}
-            >
-              Save All
-            </Button>
-            <Button
-              size={'sm'}
-              variant={'destructive'}
-              className='h-6'
-              onClick={async () => {
-                await deleteAllStoredFiles(fileStorageRef.current!)
-                await updateStoredFiles()
-              }}
-            >
-              Clear All
-            </Button>
+            <div className='flex w-full sm:w-auto gap-2 justify-between'>
+              <Button
+                size={'sm'}
+                className='h-6 bg-green-500 hover:bg-green-600'
+                onClick={downloadAllFiles}
+              >
+                Download All
+              </Button>
+              <Button
+                size={'sm'}
+                variant={'destructive'}
+                className='h-6 hover:bg-red-700'
+                onClick={async () => {
+                  await deleteAllStoredFiles(fileStorageRef.current!)
+                  await updateStoredFiles()
+                }}
+              >
+                Clear All
+              </Button>
+            </div>
           </div>
-          <div className='flex flex-wrap gap-2 min-[100px]: max-h-[200px] overflow-auto text-xs font-semibold'>
+          <div className='flex flex-wrap gap-2 overflow-auto text-xs font-semibold max-h-[200px] justify-center sm:justify-around'>
             {storedFiles.map((file) => (
               <CardContent
                 key={file.id}
                 className={cn(
-                  'p-1 flex break-all self-center border w-[200px] justify-between',
+                  'p-1 flex break-all border w-full max-w-[360px] sm:max-w-[300px] justify-between items-center',
                   file.status === 'error' && 'text-red-300',
                   ['transferring', 'pending'].includes(file.status) &&
                     'text-amber-500',
                   file.status === 'completed' && 'text-green-300'
                 )}
               >
-                {file.transferType === 'sending' && (
-                  <ArrowLeftToLine className='h-4 w-4 bg-teal-500/50 rounded text-white transition' />
-                )}
-                <p>{file.name}</p>
+                <p className='w-1/2'>{file.name}</p>
                 <b>{formatBytes(file.size)}</b>
-                <div className='flex gap-1 justify-between items-center'>
+                <div className='flex gap-2 justify-between items-center'>
                   {file.transferType === 'receiving' &&
-                    file.status === 'completed' && (
-                      <Download
-                        className='h-4 w-4 bg-green-500 cursor-pointer hover:scale-110 hover:bg-green-500/50 rounded text-white transition'
-                        onClick={() => {
-                          downloadFile(file.id, fileStorageRef.current!)
-                        }}
-                      />
-                    )}
-
-                  <X
-                    className='bg-red-500 text-white rounded h-4 w-4 cursor-pointer hover:scale-110 hover:bg-red-500/50 transition'
+                  file.status === 'completed' ? (
+                    <button
+                      onClick={async () => {
+                        await downloadFile(file.id)
+                      }}
+                      disabled={isDownloading[file.id]}
+                    >
+                      {isDownloading[file.id] ? (
+                        <Loader className='animate-spin stroke-5' />
+                      ) : (
+                        <Download className='bg-green-500 cursor-pointer hover:scale-110 hover:bg-green-500/50 rounded text-white transition' />
+                      )}
+                    </button>
+                  ) : file.transferType === 'sending' &&
+                    file.status === 'completed' ? (
+                    <ArrowLeftToLine className='bg-teal-500/50 rounded text-white transition' />
+                  ) : (
+                    <>
+                      <Redo />
+                    </>
+                  )}
+                  <button
                     onClick={async () => {
                       await deleteFile(file.id, fileStorageRef.current!)
                       await updateStoredFiles()
                     }}
-                  />
+                    disabled={isDownloading[file.id]}
+                  >
+                    <X className='bg-red-500 text-white rounded cursor-pointer hover:scale-110 hover:bg-red-500/50 transition' />
+                  </button>
                 </div>
               </CardContent>
             ))}
           </div>
           <div
             className={cn(
-              'flex flex-wrap gap-4 w-full h-[250px] overflow-auto items-center'
+              'flex flex-wrap gap-4 w-full max-h-1/2 overflow-aut items-center justify-center sm:justify-around'
             )}
           >
             {peers
@@ -206,25 +262,37 @@ const RoomPage = () => {
                 <Card
                   key={peer.sid}
                   className={cn(
-                    'hover:shadow hover:scale-105 aspect-square grid place-items-center transition-all rounded-sm',
+                    'hover:shadow hover:scale-105 grid place-items-center transition-all rounded-sm w-full max-w-[360px] sm:max-w-[300px] h-[240px]',
                     connectionState[peer.sid] === 'connected'
-                      ? 'bg-green  w-[240px] h-[240px]'
-                      : 'bg-red-300 rounded-full'
+                      ? 'bg-green'
+                      : 'bg-red-300 w-[240px] rounded-full'
                   )}
                 >
                   <CardContent
                     className={cn(
-                      'flex flex-col justify-center items-center p-1 h-full w-full gap-1 overflow-auto'
+                      'flex flex-col items-center p-1 h-full w-full gap-1 overflow-auto',
+                      connectionState[peer.sid] === 'connected'
+                        ? 'justify-between'
+                        : 'justify-center'
                     )}
                   >
-                    <div className='flex justify-between items-center gap-1 w-full'>
-                      <b className='text-xs'>{peer.sid}</b>
+                    <div
+                      className={cn(
+                        'flex items-center gap-1 w-full',
+                        connectionState[peer.sid] === 'connected'
+                          ? 'justify-between'
+                          : 'justify-center'
+                      )}
+                    >
+                      <b className='text-xs bg-green-500 px-1 text-white rounded'>
+                        {peer.sid}
+                      </b>
                       {connectionState[peer.sid] === 'connected' && (
                         <button
-                          className='bg-white cursor-pointer hover:scale-110 p-0 m-0 h-4 w-4'
+                          className='text-white bg-red-500 cursor-pointer text-[10px] hover:scale-110 h-4 rounded px-1 font-semibold'
                           onClick={closePeer.bind(this, peer.sid)}
                         >
-                          <X className='bg-red-500 text-white rounded h-4 w-4' />
+                          Disconnect
                         </button>
                       )}
                     </div>
@@ -236,8 +304,12 @@ const RoomPage = () => {
                       >
                         Connect
                       </Button>
+                    ) : !Object.values(transferFiles).length ? (
+                      <div className='flex-1 content-center'>
+                        <p>No files transferred yet!</p>
+                      </div>
                     ) : (
-                      <div className='flex flex-col w-full overflow-auto gap-2 pb-1'>
+                      <div className='flex h-full flex-col w-full overflow-auto gap-2 pb-1'>
                         {Object.values(transferFiles)
                           .filter((f) => f.sid === peer.sid)
                           .map((file) => (
@@ -251,7 +323,7 @@ const RoomPage = () => {
                               )}
                             >
                               <div className='flex gap-1 items-center'>
-                                <b className='break-words'>{file.name}</b>
+                                <b className='break-words w-3/4'>{file.name}</b>
                                 <b>{formatBytes(file.size)}</b>
                                 <div className='flex gap-1'>
                                   {file.transferType === 'sending' ? (
@@ -269,7 +341,7 @@ const RoomPage = () => {
                                   'bg-sky-500',
                                   ['transferring', 'pending'].includes(
                                     file.status
-                                  ) && 'bg-red-500',
+                                  ) && 'bg-amber-500',
                                   file.status === 'completed' && 'bg-green-500'
                                 )}
                               />

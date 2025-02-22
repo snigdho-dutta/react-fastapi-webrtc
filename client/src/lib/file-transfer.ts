@@ -15,7 +15,7 @@ export type ChannelData = {
   progress?: number
 }
 
-const CHUNK_SIZE = 128 * 1024 // 256KB
+const CHUNK_SIZE = 256 * 1024 // 256KB
 const MAX_BUFFER_THRESHOLD = 64 * 1024 // 64KB
 
 export const sendFileAsBase64 = async (
