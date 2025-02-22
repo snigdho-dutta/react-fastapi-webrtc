@@ -32,16 +32,17 @@ const HomePage = () => {
 
   return (
     <Page className='flex bg-blue-500'>
-      <Card className='min-w-[500px] text-center'>
+      <Card className='min-w-[300px] max-w-[500px] w-[98%] text-center'>
         <CardHeader className='text-3xl font-semibold bg-gradient-to-br from-red-500  to-blue-600 text-transparent bg-clip-text'>
           P2P Media Share
         </CardHeader>
-        <CardContent className='w-full text-center'>
+        <CardContent className='px-2 w-full text-center'>
           <form className='flex flex-col w-full gap-2' onSubmit={joinRoom}>
-            <div className='flex gap-2 mt-auto items-center font-semibold'>
-              <div className='relative w-full'>
+            <div className='flex w-full flex-col sm:flex-row gap-2 mt-auto items-center font-semibold'>
+              <div className='relative w-11/12'>
                 <Input
                   placeholder='Paste your room id or generate one'
+                  className='w-full'
                   value={joinRoomId}
                   onChange={(e) => {
                     setJoinRoomId(e.target.value)
@@ -66,17 +67,19 @@ const HomePage = () => {
                   }}
                 />
               </div>
-              <Button
-                type='button'
-                onClick={async () => {
-                  await navigator.share({
-                    url: document.URL + joinRoomId,
-                  })
-                }}
-              >
-                <Link />
-              </Button>
-              <Button type='submit'>Join</Button>
+              <div className='flex flex-1/2 justify-evenly w-full'>
+                <Button type='submit'>Join</Button>
+                <Button
+                  type='button'
+                  onClick={async () => {
+                    await navigator.share({
+                      url: document.URL + joinRoomId,
+                    })
+                  }}
+                >
+                  <Link />
+                </Button>
+              </div>
             </div>
             <div className='flex gap-2 items-center'>
               <Label className='w-'>Client ID</Label>
