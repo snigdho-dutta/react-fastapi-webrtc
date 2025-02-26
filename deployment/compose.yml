@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    ports:
+      - 10000:10000
+
+  server:
+    image: nginx:latest
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    ports:
+      - 80:80
