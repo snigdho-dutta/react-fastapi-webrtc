@@ -124,12 +124,39 @@ export const receiveFileAsBase64 = async (
   }
 }
 
+const startSilentAudio = () => {
+  try {
+    const audioContext = new (window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext)()
+    const oscillator = audioContext.createOscillator()
+    const gainNode = audioContext.createGain()
+
+    oscillator.connect(gainNode)
+    gainNode.connect(audioContext.destination)
+
+    // Set gain to 0 (inaudible)
+    gainNode.gain.value = 0
+
+    // Start the oscillator
+    oscillator.start(0)
+
+    // Return the context so you can stop it later
+    return audioContext
+  } catch (e) {
+    console.warn('Audio context workaround failed:', e)
+    return null
+  }
+}
+
 export const sendFile = async (
   peer: RTCManager,
   file: File,
   fileStorage: FileStorage,
   onProgress?: (v: FileMetadata & { progress: number }) => void
 ) => {
+  const audioContext = startSilentAudio()
+  if (!audioContext) throw new Error('Failed to initialize silent audio.')
   const fileId = crypto.randomUUID()
   // Set the threshold on the DataChannel immediately after creation
   const dataChannel = peer.createDataChannel(fileId)
@@ -212,6 +239,8 @@ export const sendFile = async (
       onProgress?.({ ...metadata, progress: 100 })
       resolve() // Resolve the main promise
       dataChannel.close()
+      // Stop the silent audio
+      audioContext.close()
     }
 
     dataChannel.onopen = async () => {
