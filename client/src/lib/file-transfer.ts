@@ -15,8 +15,8 @@ export type ChannelData = {
   progress?: number
 }
 
-const CHUNK_SIZE = 256 * 1024 // 256KB
-const MAX_BUFFER_THRESHOLD = 64 * 1024 // 64KB
+const CHUNK_SIZE = 64 * 1024 // 64KB
+const MAX_BUFFER_THRESHOLD = 1024 * 1024 // 1MB
 
 export const sendFileAsBase64 = async (
   dataChannel: RTCDataChannel,
@@ -131,9 +131,14 @@ export const sendFile = async (
   onProgress?: (v: FileMetadata & { progress: number }) => void
 ) => {
   const fileId = crypto.randomUUID()
+  // Set the threshold on the DataChannel immediately after creation
   const dataChannel = peer.createDataChannel(fileId)
-  dataChannel.onopen = async () => {
+  dataChannel.bufferedAmountLowThreshold = MAX_BUFFER_THRESHOLD
+
+  // Wrap the sending logic in a promise to handle the asynchronous nature of event-driven flow control
+  return new Promise<void>((resolve, reject) => {
     const metadata: FileMetadata = {
+      // ... (rest of your metadata properties)
       id: fileId,
       sid: peer.sid,
       name: file.name,
@@ -146,47 +151,83 @@ export const sendFile = async (
       transferType: 'sending',
       lastModified: file.lastModified,
     }
-    await fileStorage.saveFileMetadata(metadata)
-    dataChannel.send(JSON.stringify({ type: 'metadata', metadata }))
 
-    const chunkBytesIndexes = Array.from(
-      {
-        length: Math.ceil(file.size / CHUNK_SIZE),
-      },
-      (_, i) => i * CHUNK_SIZE
-    )
-
+    // Use an index to keep track of which chunk is next
+    let chunkIndex = 0
+    const totalChunks = metadata.totalChunks
     const reader = new FileReader()
-    for (let i = 0; i < chunkBytesIndexes.length; i++) {
-      const chunkBytesIdx = chunkBytesIndexes[i]
-      const chunkBlob = file.slice(chunkBytesIdx, chunkBytesIdx + CHUNK_SIZE)
-      const progress = +(((i + 1) / chunkBytesIndexes.length) * 100).toFixed(2)
-      const chunkMetadata: Omit<FileChunk, 'chunk'> = {
-        fileId,
-        index: i,
-        progress,
+
+    // The core function to send the next chunk
+    const sendNextChunk = async () => {
+      if (chunkIndex < totalChunks) {
+        const chunkBytesIdx = chunkIndex * CHUNK_SIZE
+        const chunkBlob = file.slice(chunkBytesIdx, chunkBytesIdx + CHUNK_SIZE)
+
+        try {
+          const chunk = await readChunk(reader, chunkBlob)
+
+          const progress = +(((chunkIndex + 1) / totalChunks) * 100).toFixed(2)
+          const chunkMetadata: Omit<FileChunk, 'chunk'> = {
+            fileId,
+            index: chunkIndex,
+            progress,
+          }
+
+          // Send metadata then the chunk data
+          dataChannel.send(
+            JSON.stringify({ type: 'chunk-metadata', metadata: chunkMetadata })
+          )
+          dataChannel.send(chunk)
+          onProgress?.({ ...metadata, progress })
+
+          chunkIndex++
+
+          // Immediately attempt to send the next chunk if buffer allows
+          if (dataChannel.bufferedAmount <= MAX_BUFFER_THRESHOLD) {
+            sendNextChunk()
+          }
+          // If the buffer is full, the 'bufferedamountlow' event handler will call sendNextChunk when ready
+        } catch (error) {
+          reject(error)
+        }
+      } else {
+        // All chunks sent, wait for the final buffer to drain before sending completion signal
+        finalizeTransfer()
       }
-
-      dataChannel.send(
-        JSON.stringify({ type: 'chunk-metadata', metadata: chunkMetadata })
-      )
-      onProgress?.({ ...metadata, progress })
-      const chunk = await readChunk(reader, chunkBlob)
-      while (dataChannel.bufferedAmount > MAX_BUFFER_THRESHOLD) {
-        await new Promise((resolve) => setTimeout(resolve, 50))
-      }
-
-      dataChannel.send(chunk)
-    }
-    while (dataChannel.bufferedAmount > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 50))
     }
 
-    metadata.status = 'completed'
-    await fileStorage.saveFileMetadata(metadata)
-    dataChannel.send(JSON.stringify({ type: 'complete', metadata }))
-    onProgress?.({ ...metadata, progress: 100 })
-  }
+    const finalizeTransfer = () => {
+      // Wait for buffer to clear, using an event listener for reliability
+      // if (dataChannel.bufferedAmount > 0) {
+      //   dataChannel.addEventListener('bufferedamountlow', finalizeTransfer, {
+      //     once: true,
+      //   })
+      //   return
+      // }
+
+      // Finalize
+      metadata.status = 'completed'
+      fileStorage.saveFileMetadata(metadata)
+      dataChannel.send(JSON.stringify({ type: 'complete', metadata }))
+      onProgress?.({ ...metadata, progress: 100 })
+      resolve() // Resolve the main promise
+      dataChannel.close()
+    }
+
+    dataChannel.onopen = async () => {
+      await fileStorage.saveFileMetadata(metadata)
+      dataChannel.send(JSON.stringify({ type: 'metadata', metadata }))
+
+      // Attach the low buffer listener to automatically resume sending
+      dataChannel.addEventListener('bufferedamountlow', sendNextChunk)
+
+      // Start the sending process
+      sendNextChunk()
+    }
+
+    dataChannel.onerror = (error) => reject(error)
+    dataChannel.onclose = () => console.log('Data channel closed')
+  })
 }
 
 export const receiveFile = async (
@@ -211,11 +252,13 @@ export const receiveFile = async (
           break
         }
         case 'chunk-metadata': {
+          console.log('chunk-metadata', (data.metadata as FileChunk).progress)
           chunkMetadata = data.metadata! as FileChunk
           onProgress?.({ ...fileMetadata, progress: chunkMetadata.progress })
           break
         }
         case 'complete': {
+          console.log('complete')
           const metadata = data.metadata! as FileMetadata
           metadata.sid = sid
           metadata.transferType = 'receiving'
